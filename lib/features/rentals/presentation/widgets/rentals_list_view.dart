@@ -2,7 +2,6 @@ import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:hive_flutter/hive_flutter.dart';
 import '../../data/models/rental_transaction_model.dart';
-import '../../data/models/rental_item.dart';
 import '../../../tenants/data/models/tenant_model.dart';
 import '../../../../core/constants/hive_boxes.dart';
 import '../cubit/rental_cubit.dart';

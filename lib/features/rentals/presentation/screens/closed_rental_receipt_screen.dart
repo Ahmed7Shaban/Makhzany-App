@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../../data/models/rental_transaction_model.dart';
 import '../../../tenants/data/models/tenant_model.dart';
+import '../widgets/receipt_part_widget.dart';
 import 'transaction_details_screen.dart';
 
 class ClosedRentalReceiptScreen extends StatelessWidget {

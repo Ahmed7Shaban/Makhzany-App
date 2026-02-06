@@ -8,21 +8,16 @@ import 'package:path_provider/path_provider.dart';
 
 import '../../data/models/rental_transaction_model.dart';
 import '../../data/models/rental_item.dart';
+import '../../data/models/payment_log_model.dart';
+import '../../data/models/financial_record_model.dart';
 import '../cubit/rental_cubit.dart';
 import '../cubit/rental_state.dart';
 import '../../../inventory/presentation/cubit/inventory_cubit.dart';
+import '../../../inventory/presentation/cubit/inventory_state.dart';
 import '../../../tenants/presentation/cubit/tenant_cubit.dart';
 import '../../../tenants/presentation/cubit/tenant_state.dart';
 import '../../../tenants/data/models/tenant_model.dart';
-
 import '../widgets/receipt_part_widget.dart';
-import '../widgets/active_items_tab.dart';
-import '../widgets/returned_items_tab.dart';
-import '../widgets/financials_tab.dart';
-import '../widgets/add_items_bottom_sheet.dart';
-import '../widgets/return_item_bottom_sheet.dart';
-import '../widgets/settle_account_bottom_sheet.dart';
-import '../widgets/close_account_bottom_sheet.dart';
 
 class TransactionDetailsScreen extends StatefulWidget {
   final RentalTransaction transaction;
@@ -37,59 +32,957 @@ class _TransactionDetailsScreenState extends State<TransactionDetailsScreen> {
   final ScreenshotController screenshotController = ScreenshotController();
   final Color primaryBrown = const Color(0xFF553117);
 
-  String _getDayName(DateTime date) {
-    const shortDays = {
-      DateTime.monday: 'اثنين',
-      DateTime.tuesday: 'ثلاثاء',
-      DateTime.wednesday: 'أربعاء',
-      DateTime.thursday: 'خميس',
-      DateTime.friday: 'جمعة',
-      DateTime.saturday: 'سبت',
-      DateTime.sunday: 'أحد',
-    };
-    return shortDays[date.weekday] ?? '';
-  }
+  // --- UI Helpers ---
 
-  String _formatFullDate(DateTime date) {
-    return '${_getDayName(date)}، ${intl.DateFormat('yyyy-MM-dd').format(date)}';
-  }
+  void _showReturnBottomSheet(RentalItem item) {
+    double qty = item.quantity.toDouble();
+    DateTime selectedDate = DateTime.now();
+    final t = widget.transaction;
 
-  void _showReturnBottomSheet(RentalItem item, RentalTransaction t) {
     showModalBottomSheet(
       context: context,
       isScrollControlled: true,
       backgroundColor: Colors.transparent,
-      builder: (ctx) => ReturnItemBottomSheet(transaction: t, item: item),
+      builder: (ctx) => StatefulBuilder(
+        builder: (context, setSheetState) {
+          final breakdown = item.calculateDetailedDays(
+            selectedDate,
+            excludeFridays: t.discountFridays,
+          );
+          final estimatedCost =
+              qty * item.priceAtMoment * breakdown.chargeableDays;
+
+          return Container(
+            decoration: const BoxDecoration(
+              color: Colors.white,
+              borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+            ),
+            padding: EdgeInsets.only(
+              bottom: MediaQuery.of(context).viewInsets.bottom + 24,
+              left: 24,
+              right: 24,
+              top: 12,
+            ),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Center(
+                  child: Container(
+                    width: 40,
+                    height: 4,
+                    decoration: BoxDecoration(
+                      color: Colors.grey[300],
+                      borderRadius: BorderRadius.circular(2),
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 24),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Expanded(
+                      child: Text(
+                        'إرجاع: ${item.itemName}',
+                        style: TextStyle(
+                          fontSize: 20,
+                          fontWeight: FontWeight.bold,
+                          color: primaryBrown,
+                        ),
+                      ),
+                    ),
+                    IconButton(
+                      icon: const Icon(Icons.close, color: Colors.grey),
+                      onPressed: () => Navigator.pop(ctx),
+                    ),
+                  ],
+                ),
+                const Divider(),
+                const SizedBox(height: 16),
+                // Period Info Container
+                Container(
+                  padding: const EdgeInsets.all(16),
+                  decoration: BoxDecoration(
+                    color: Colors.blueGrey.shade50,
+                    borderRadius: BorderRadius.circular(16),
+                    border: Border.all(color: Colors.blueGrey.shade100),
+                  ),
+                  child: Column(
+                    children: [
+                      _rowInfo(
+                        'تاريخ الاستلام:',
+                        _formatFullDate(item.startDate),
+                        Icons.login,
+                      ),
+                      const Padding(
+                        padding: EdgeInsets.symmetric(vertical: 8),
+                        child: Divider(height: 1, color: Colors.blueGrey),
+                      ),
+                      InkWell(
+                        onTap: () async {
+                          final date = await showDatePicker(
+                            context: context,
+                            initialDate: selectedDate,
+                            firstDate:
+                                item.startDate.isBefore(
+                                  DateTime.now().subtract(
+                                    const Duration(days: 3650),
+                                  ),
+                                )
+                                ? item.startDate
+                                : DateTime.now().subtract(
+                                    const Duration(days: 3650),
+                                  ),
+                            lastDate: DateTime(2100),
+                          );
+                          if (date != null)
+                            setSheetState(() => selectedDate = date);
+                        },
+                        child: _rowInfo(
+                          'تاريخ الإرجاع:',
+                          _formatFullDate(selectedDate),
+                          Icons.logout,
+                          color: Colors.blue.shade700,
+                          isEditable: true,
+                        ),
+                      ),
+                      const Divider(height: 24),
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceAround,
+                        children: [
+                          _statItem(
+                            '${breakdown.totalDays} يوم',
+                            'الفترة الكلية',
+                          ),
+                          if (t.discountFridays)
+                            _statItem(
+                              '${breakdown.fridays} يوم',
+                              'خصم جمعة',
+                              color: Colors.orange.shade800,
+                            ),
+                          _statItem(
+                            '${breakdown.chargeableDays} يوم',
+                            'أيام الدفع',
+                            color: Colors.green,
+                          ),
+                        ],
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 24),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Text(
+                      'الكمية المسترجعة:',
+                      style: TextStyle(fontWeight: FontWeight.bold),
+                    ),
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 12,
+                        vertical: 4,
+                      ),
+                      decoration: BoxDecoration(
+                        color: primaryBrown.withValues(alpha: 0.1),
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      child: Text(
+                        '${qty.toInt()} من ${item.quantity}',
+                        style: TextStyle(
+                          fontWeight: FontWeight.bold,
+                          color: primaryBrown,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+                Slider(
+                  value: qty,
+                  min: 1,
+                  max: item.quantity.toDouble(),
+                  divisions: item.quantity > 1 ? item.quantity - 1 : 1,
+                  activeColor: primaryBrown,
+                  onChanged: (v) => setSheetState(() => qty = v),
+                ),
+                const SizedBox(height: 16),
+                // Cost Preview
+                Container(
+                  padding: const EdgeInsets.all(16),
+                  decoration: BoxDecoration(
+                    color: Colors.green.shade50,
+                    borderRadius: BorderRadius.circular(16),
+                    border: Border.all(color: Colors.green.shade200),
+                  ),
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            'حساب القطع في هذه الفترة:',
+                            style: TextStyle(
+                              fontSize: 12,
+                              color: Colors.green.shade800,
+                            ),
+                          ),
+                          Text(
+                            '${qty.toInt()} قطعة × ${item.priceAtMoment} ج × ${breakdown.chargeableDays} يوم',
+                            style: const TextStyle(
+                              fontSize: 11,
+                              color: Colors.grey,
+                            ),
+                          ),
+                        ],
+                      ),
+                      Text(
+                        '${estimatedCost.toStringAsFixed(1)} ج',
+                        style: TextStyle(
+                          fontSize: 20,
+                          fontWeight: FontWeight.w900,
+                          color: Colors.green.shade700,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 24),
+                SizedBox(
+                  width: double.infinity,
+                  child: ElevatedButton(
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: primaryBrown,
+                      foregroundColor: Colors.white,
+                      padding: const EdgeInsets.symmetric(vertical: 16),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                      elevation: 0,
+                    ),
+                    onPressed: () {
+                      context.read<RentalCubit>().returnItemsPartial(
+                        widget.transaction.id,
+                        item,
+                        qty.toInt(),
+                        selectedDate,
+                      );
+                      Navigator.pop(ctx);
+                    },
+                    child: Text(
+                      'تأكيد وإرجاع للمخزن',
+                      style: TextStyle(
+                        fontSize: 16,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          );
+        },
+      ),
+    );
+  }
+
+  Widget _rowInfo(
+    String label,
+    String val,
+    IconData icon, {
+    Color? color,
+    bool isEditable = false,
+  }) {
+    return Row(
+      children: [
+        Icon(icon, size: 18, color: color ?? Colors.blueGrey),
+        const SizedBox(width: 8),
+        Text(
+          label,
+          style: TextStyle(fontSize: 13, color: Colors.blueGrey.shade700),
+        ),
+        const Spacer(),
+        Text(
+          val,
+          style: TextStyle(
+            fontSize: 14,
+            fontWeight: FontWeight.bold,
+            color: color ?? Colors.black87,
+          ),
+        ),
+        if (isEditable) ...[
+          const SizedBox(width: 4),
+          const Icon(Icons.edit, size: 14, color: Colors.grey),
+        ],
+      ],
+    );
+  }
+
+  Widget _statItem(String val, String label, {Color? color}) {
+    return Column(
+      children: [
+        Text(
+          val,
+          style: TextStyle(
+            fontSize: 16,
+            fontWeight: FontWeight.w900,
+            color: color ?? Colors.blueGrey.shade900,
+          ),
+        ),
+        Text(label, style: TextStyle(fontSize: 10, color: Colors.blueGrey)),
+      ],
     );
   }
 
   void _showAddItemsBottomSheet() {
     context.read<InventoryCubit>().loadInventory();
+    final Map<String, int> selectedQtys = {};
+    DateTime selectedDate = DateTime.now();
+
     showModalBottomSheet(
       context: context,
       isScrollControlled: true,
       backgroundColor: Colors.transparent,
-      builder: (ctx) =>
-          AddItemsBottomSheet(transactionId: widget.transaction.id),
+      builder: (ctx) => StatefulBuilder(
+        builder: (context, setSheetState) => Container(
+          height: MediaQuery.of(context).size.height * 0.85,
+          decoration: const BoxDecoration(
+            color: Colors.white,
+            borderRadius: BorderRadius.vertical(top: Radius.circular(32)),
+          ),
+          child: Column(
+            children: [
+              const SizedBox(height: 12),
+              Container(
+                width: 50,
+                height: 5,
+                decoration: BoxDecoration(
+                  color: Colors.grey.shade300,
+                  borderRadius: BorderRadius.circular(2.5),
+                ),
+              ),
+              Padding(
+                padding: const EdgeInsets.all(24),
+                child: Row(
+                  children: [
+                    Container(
+                      padding: const EdgeInsets.all(10),
+                      decoration: BoxDecoration(
+                        color: primaryBrown.withValues(alpha: 0.1),
+                        shape: BoxShape.circle,
+                      ),
+                      child: Icon(Icons.add_shopping_cart, color: primaryBrown),
+                    ),
+                    const SizedBox(width: 16),
+                    const Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            'إضافة عُهدة جديدة',
+                            style: TextStyle(
+                              fontSize: 20,
+                              fontWeight: FontWeight.w900,
+                              color: Color(0xFF422712),
+                            ),
+                          ),
+                          Text(
+                            'اختر المعدات الإضافية التي استلمها العميل الآن',
+                            style: TextStyle(fontSize: 12, color: Colors.grey),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              const Divider(height: 1),
+              Expanded(
+                child: BlocBuilder<InventoryCubit, InventoryState>(
+                  builder: (context, state) {
+                    if (state is! InventoryLoaded) {
+                      return const Center(child: CircularProgressIndicator());
+                    }
+
+                    final availableItems = state.items
+                        .where((i) => i.availableQty > 0)
+                        .toList();
+
+                    return ListView(
+                      padding: const EdgeInsets.all(24),
+                      children: [
+                        const Text(
+                          'تاريخ الاستلام الإضافي:',
+                          style: TextStyle(
+                            fontWeight: FontWeight.bold,
+                            fontSize: 13,
+                          ),
+                        ),
+                        const SizedBox(height: 12),
+                        InkWell(
+                          onTap: () async {
+                            final date = await showDatePicker(
+                              context: context,
+                              initialDate: selectedDate,
+                              firstDate: DateTime(2020),
+                              lastDate: DateTime(2030),
+                            );
+                            if (date != null)
+                              setSheetState(() => selectedDate = date);
+                          },
+                          child: Container(
+                            padding: const EdgeInsets.all(16),
+                            decoration: BoxDecoration(
+                              color: Colors.grey.shade50,
+                              borderRadius: BorderRadius.circular(12),
+                              border: Border.all(color: Colors.grey.shade200),
+                            ),
+                            child: Row(
+                              children: [
+                                const Icon(
+                                  Icons.calendar_month,
+                                  size: 20,
+                                  color: Colors.blueGrey,
+                                ),
+                                const SizedBox(width: 12),
+                                Text(
+                                  intl.DateFormat(
+                                    'yyyy-MM-dd',
+                                  ).format(selectedDate),
+                                  style: const TextStyle(
+                                    fontWeight: FontWeight.bold,
+                                  ),
+                                ),
+                                const Spacer(),
+                                const Icon(
+                                  Icons.edit,
+                                  size: 16,
+                                  color: Colors.grey,
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
+                        const SizedBox(height: 32),
+                        const Text(
+                          'قائمة المعدات المتاحة:',
+                          style: TextStyle(
+                            fontWeight: FontWeight.bold,
+                            fontSize: 13,
+                          ),
+                        ),
+                        const SizedBox(height: 16),
+                        ...availableItems.map((item) {
+                          final currentQty = selectedQtys[item.id] ?? 0;
+                          final isPicked = currentQty > 0;
+
+                          return AnimatedContainer(
+                            duration: const Duration(milliseconds: 200),
+                            margin: const EdgeInsets.only(bottom: 12),
+                            decoration: BoxDecoration(
+                              color: isPicked
+                                  ? primaryBrown.withOpacity(0.05)
+                                  : Colors.white,
+                              borderRadius: BorderRadius.circular(16),
+                              border: Border.all(
+                                color: isPicked
+                                    ? primaryBrown
+                                    : Colors.grey.shade200,
+                                width: isPicked ? 2 : 1,
+                              ),
+                            ),
+                            child: ListTile(
+                              contentPadding: const EdgeInsets.symmetric(
+                                horizontal: 16,
+                                vertical: 8,
+                              ),
+                              title: Text(
+                                item.name,
+                                style: TextStyle(
+                                  fontWeight: isPicked
+                                      ? FontWeight.bold
+                                      : FontWeight.normal,
+                                ),
+                              ),
+                              subtitle: Text(
+                                'متاح: ${item.availableQty} | بسعر: ${item.pricePerDay} ج',
+                              ),
+                              trailing: Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  if (isPicked)
+                                    IconButton(
+                                      icon: const Icon(
+                                        Icons.remove_circle_outline,
+                                        color: Colors.red,
+                                      ),
+                                      onPressed: () => setSheetState(() {
+                                        if (currentQty > 0)
+                                          selectedQtys[item.id] =
+                                              currentQty - 1;
+                                      }),
+                                    ),
+                                  if (isPicked)
+                                    Text(
+                                      '$currentQty',
+                                      style: const TextStyle(
+                                        fontWeight: FontWeight.w900,
+                                        fontSize: 16,
+                                      ),
+                                    ),
+                                  IconButton(
+                                    icon: Icon(
+                                      Icons.add_circle,
+                                      color: currentQty < item.availableQty
+                                          ? primaryBrown
+                                          : Colors.grey.shade300,
+                                    ),
+                                    onPressed: currentQty < item.availableQty
+                                        ? () => setSheetState(() {
+                                            selectedQtys[item.id] =
+                                                currentQty + 1;
+                                          })
+                                        : null,
+                                  ),
+                                ],
+                              ),
+                            ),
+                          );
+                        }).toList(),
+                      ],
+                    );
+                  },
+                ),
+              ),
+              Container(
+                padding: const EdgeInsets.all(24),
+                decoration: BoxDecoration(
+                  color: Colors.white,
+                  boxShadow: [
+                    BoxShadow(
+                      color: Colors.black.withOpacity(0.05),
+                      blurRadius: 10,
+                      offset: const Offset(0, -4),
+                    ),
+                  ],
+                ),
+                child: SizedBox(
+                  width: double.infinity,
+                  child: ElevatedButton(
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: primaryBrown,
+                      foregroundColor: Colors.white,
+                      padding: const EdgeInsets.symmetric(vertical: 16),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                    ),
+                    onPressed: selectedQtys.values.every((v) => v == 0)
+                        ? null
+                        : () {
+                            final List<RentalItem> newItems = [];
+                            final inventoryState = context
+                                .read<InventoryCubit>()
+                                .state;
+                            if (inventoryState is InventoryLoaded) {
+                              selectedQtys.forEach((id, q) {
+                                if (q > 0) {
+                                  final inv = inventoryState.items.firstWhere(
+                                    (i) => i.id == id,
+                                  );
+                                  newItems.add(
+                                    RentalItem(
+                                      itemId: inv.id,
+                                      itemName: inv.name,
+                                      quantity: q,
+                                      priceAtMoment: inv.pricePerDay,
+                                      startDate: selectedDate,
+                                      status: 'Active',
+                                    ),
+                                  );
+                                }
+                              });
+                              context.read<RentalCubit>().addExtraItems(
+                                widget.transaction.id,
+                                newItems,
+                              );
+                              Navigator.pop(ctx);
+                            }
+                          },
+                    child: const Text(
+                      'إضافة المعدات المحددة للفاتورة',
+                      style: TextStyle(fontWeight: FontWeight.bold),
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
     );
   }
 
   void _showSettleBottomSheet(RentalTransaction t) {
+    DateTime selectedDate = DateTime.now();
+
     showModalBottomSheet(
       context: context,
       isScrollControlled: true,
       backgroundColor: Colors.transparent,
-      builder: (ctx) => SettleAccountBottomSheet(transaction: t),
+      builder: (ctx) => StatefulBuilder(
+        builder: (context, setSheetState) {
+          final activeItems = t.items
+              .where((i) => i.status == 'Active')
+              .toList();
+          double previewTotal = 0;
+          List<Widget> calculationList = [];
+
+          for (var item in activeItems) {
+            DateTime? effStart;
+            if (t.lastSettlementDate != null &&
+                t.lastSettlementDate!.isAfter(item.startDate)) {
+              effStart = t.lastSettlementDate;
+            }
+            final b = item.calculateDetailedDays(
+              selectedDate,
+              excludeFridays: t.discountFridays,
+              alternativeStartDate: effStart,
+            );
+            final itemTotal =
+                item.quantity * item.priceAtMoment * b.chargeableDays;
+            previewTotal += itemTotal;
+
+            calculationList.add(
+              Padding(
+                padding: const EdgeInsets.symmetric(vertical: 8),
+                child: Row(
+                  children: [
+                    Expanded(
+                      flex: 3,
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            item.itemName,
+                            style: const TextStyle(fontWeight: FontWeight.bold),
+                          ),
+                          Text(
+                            '${item.quantity} قطعة × ${item.priceAtMoment} ج',
+                            style: TextStyle(
+                              fontSize: 11,
+                              color: Colors.grey[600],
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    Expanded(
+                      flex: 2,
+                      child: Column(
+                        children: [
+                          Text(
+                            '${b.chargeableDays} يوم',
+                            style: const TextStyle(fontSize: 12),
+                          ),
+                          if (t.discountFridays && b.fridays > 0)
+                            Text(
+                              '(-${b.fridays} جمعة)',
+                              style: const TextStyle(
+                                fontSize: 9,
+                                color: Colors.red,
+                              ),
+                            ),
+                        ],
+                      ),
+                    ),
+                    Expanded(
+                      flex: 2,
+                      child: Text(
+                        '${itemTotal.toStringAsFixed(1)} ج',
+                        textAlign: TextAlign.end,
+                        style: const TextStyle(
+                          fontWeight: FontWeight.bold,
+                          color: Colors.brown,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            );
+          }
+
+          return Container(
+            height: MediaQuery.of(context).size.height * 0.85,
+            decoration: const BoxDecoration(
+              color: Colors.white,
+              borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+            ),
+            padding: const EdgeInsets.all(24),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    const Text(
+                      'معاينة التصفية (المستخلص)',
+                      style: TextStyle(
+                        fontSize: 20,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                    IconButton(
+                      icon: const Icon(Icons.close),
+                      onPressed: () => Navigator.pop(ctx),
+                    ),
+                  ],
+                ),
+                const Divider(),
+                const SizedBox(height: 10),
+                const Text(
+                  'اختر تاريخ التصفية:',
+                  style: TextStyle(fontWeight: FontWeight.bold),
+                ),
+                const SizedBox(height: 8),
+                InkWell(
+                  onTap: () async {
+                    final fDate = (t.lastSettlementDate ?? t.startDate);
+                    final date = await showDatePicker(
+                      context: context,
+                      initialDate: selectedDate,
+                      firstDate:
+                          fDate.isBefore(
+                            DateTime.now().subtract(const Duration(days: 3650)),
+                          )
+                          ? fDate
+                          : DateTime.now().subtract(const Duration(days: 3650)),
+                      lastDate: DateTime(2100),
+                    );
+                    if (date != null) setSheetState(() => selectedDate = date);
+                  },
+                  child: Container(
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                      border: Border.all(color: Colors.brown.shade200),
+                      borderRadius: BorderRadius.circular(10),
+                      color: Colors.brown.shade50.withValues(alpha: 0.3),
+                    ),
+                    child: Row(
+                      children: [
+                        const Icon(Icons.calendar_month, color: Colors.brown),
+                        const SizedBox(width: 10),
+                        Text(
+                          intl.DateFormat('yyyy-MM-dd').format(selectedDate),
+                          style: const TextStyle(
+                            fontWeight: FontWeight.bold,
+                            color: Colors.brown,
+                          ),
+                        ),
+                        const Spacer(),
+                        const Icon(Icons.edit, size: 16, color: Colors.grey),
+                      ],
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 12),
+                Container(
+                  decoration: BoxDecoration(
+                    color: t.discountFridays
+                        ? Colors.orange.shade50
+                        : Colors.grey.shade50,
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(
+                      color: t.discountFridays
+                          ? Colors.orange.shade200
+                          : Colors.grey.shade300,
+                    ),
+                  ),
+                  child: SwitchListTile(
+                    activeColor: Colors.orange.shade800,
+                    title: Text(
+                      'خصم أيام الجمعة من الحساب',
+                      style: TextStyle(
+                        fontSize: 13,
+                        fontWeight: FontWeight.bold,
+                        color: t.discountFridays
+                            ? Colors.orange.shade900
+                            : Colors.grey.shade700,
+                      ),
+                    ),
+                    subtitle: Text(
+                      t.discountFridays
+                          ? 'سيتم استبعاد أيام الجمعة من التكلفة'
+                          : 'سيتم احتساب جميع الأيام كأيام عمل',
+                      style: const TextStyle(fontSize: 10),
+                    ),
+                    secondary: Icon(
+                      Icons.event_busy,
+                      color: t.discountFridays ? Colors.orange : Colors.grey,
+                    ),
+                    value: t.discountFridays,
+                    onChanged: (v) =>
+                        setSheetState(() => t.discountFridays = v),
+                  ),
+                ),
+                const SizedBox(height: 20),
+                const Text(
+                  'تفاصيل الحساب:',
+                  style: TextStyle(fontWeight: FontWeight.bold),
+                ),
+                const SizedBox(height: 10),
+                Expanded(
+                  child: Container(
+                    decoration: BoxDecoration(
+                      color: Colors.grey[50],
+                      border: Border.all(color: Colors.grey.shade200),
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    child: ListView(
+                      padding: const EdgeInsets.all(16),
+                      children: [
+                        if (calculationList.isEmpty)
+                          const Center(
+                            child: Text('لا توجد أصناف نشطة للتصفية'),
+                          )
+                        else
+                          ...calculationList,
+                      ],
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 20),
+                Container(
+                  padding: const EdgeInsets.all(16),
+                  decoration: BoxDecoration(
+                    color: Colors.brown.shade800,
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      const Text(
+                        'إجمالي مبلغ التصفية:',
+                        style: TextStyle(
+                          color: Colors.white,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                      Text(
+                        '${previewTotal.toStringAsFixed(1)} ج',
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 20,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 20),
+                SizedBox(
+                  width: double.infinity,
+                  child: ElevatedButton(
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: Colors.brown.shade800,
+                      foregroundColor: Colors.white,
+                      padding: const EdgeInsets.symmetric(vertical: 16),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                    ),
+                    onPressed: previewTotal < 0
+                        ? null
+                        : () {
+                            context.read<RentalCubit>().settleAccount(
+                              widget.transaction.id,
+                              selectedDate,
+                            );
+                            Navigator.pop(ctx);
+                          },
+                    child: const Text(
+                      'تأكيد وحفظ التصفية',
+                      style: TextStyle(fontSize: 16),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          );
+        },
+      ),
     );
   }
 
-  void _showCloseAccountBottomSheet(RentalTransaction t) {
-    if (!t.isActive) return;
+  void _addPayment() {
+    final amountCtrl = TextEditingController();
+    final noteCtrl = TextEditingController();
+
     showModalBottomSheet(
       context: context,
       isScrollControlled: true,
-      backgroundColor: Colors.transparent,
-      builder: (ctx) => CloseAccountBottomSheet(transaction: t),
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (ctx) => Padding(
+        padding: EdgeInsets.only(
+          bottom: MediaQuery.of(context).viewInsets.bottom,
+          left: 20,
+          right: 20,
+          top: 20,
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Text(
+              'تسجيل دفعة نقدية',
+              style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
+            ),
+            const SizedBox(height: 20),
+            TextField(
+              controller: amountCtrl,
+              keyboardType: TextInputType.number,
+              decoration: const InputDecoration(
+                labelText: 'قيمة المبلغ',
+                border: OutlineInputBorder(),
+              ),
+            ),
+            const SizedBox(height: 10),
+            TextField(
+              controller: noteCtrl,
+              decoration: const InputDecoration(
+                labelText: 'ملاحظة',
+                border: OutlineInputBorder(),
+              ),
+            ),
+            const SizedBox(height: 20),
+            SizedBox(
+              width: double.infinity,
+              child: ElevatedButton(
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: Colors.green,
+                  foregroundColor: Colors.white,
+                  padding: const EdgeInsets.symmetric(vertical: 15),
+                ),
+                onPressed: () {
+                  final amount = double.tryParse(amountCtrl.text) ?? 0;
+                  if (amount > 0) {
+                    context.read<RentalCubit>().addPayment(
+                      widget.transaction.id,
+                      amount,
+                      noteCtrl.text,
+                    );
+                    Navigator.pop(ctx);
+                  }
+                },
+                child: const Text('حفظ الدفعة'),
+              ),
+            ),
+            const SizedBox(height: 20),
+          ],
+        ),
+      ),
     );
   }
 
@@ -102,172 +995,315 @@ class _TransactionDetailsScreenState extends State<TransactionDetailsScreen> {
           .firstOrNull;
     }
 
-    ScaffoldMessenger.of(
-      context,
-    ).showSnackBar(const SnackBar(content: Text('جاري إنشاء صور الفاتورة...')));
-
-    try {
-      final img1 = await screenshotController.captureFromWidget(
-        ReceiptPartWidget(
-          transaction: t,
-          mode: ReceiptPartMode.summary,
-          tenant: tenant,
-        ),
-        delay: const Duration(milliseconds: 100),
-      );
-
-      final img2 = await screenshotController.captureFromWidget(
-        ReceiptPartWidget(
-          transaction: t,
-          mode: ReceiptPartMode.history,
-          tenant: tenant,
-        ),
-        delay: const Duration(milliseconds: 100),
-      );
-
-      final directory = await getTemporaryDirectory();
-      final path1 = '${directory.path}/receipt_summary_${t.id}.png';
-      final path2 = '${directory.path}/receipt_history_${t.id}.png';
-
-      await File(path1).writeAsBytes(img1);
-      await File(path2).writeAsBytes(img2);
-
-      await Share.shareXFiles(
-        [XFile(path1), XFile(path2)],
-        text:
-            'فاتورة العميل: ${t.tenantName}\nبتاريخ: ${_formatFullDate(DateTime.now())}',
-      );
-    } catch (e) {
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text('خطأ في مشاركة الفاتورة: $e')));
-    }
-  }
-
-  void _addPayment(RentalTransaction t) {
-    final amountCtrl = TextEditingController();
-    final noteCtrl = TextEditingController();
-    showDialog(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('إضافة دفعة نقدية'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            TextField(
-              controller: amountCtrl,
-              decoration: const InputDecoration(labelText: 'المبلغ (ج)'),
-              keyboardType: TextInputType.number,
-            ),
-            TextField(
-              controller: noteCtrl,
-              decoration: const InputDecoration(labelText: 'ملاحظة (اختياري)'),
-            ),
-          ],
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx),
-            child: const Text('إلغاء'),
-          ),
-          ElevatedButton(
-            onPressed: () {
-              final amt = double.tryParse(amountCtrl.text);
-              if (amt != null && amt > 0) {
-                context.read<RentalCubit>().addPayment(
-                  t.id,
-                  amt,
-                  noteCtrl.text,
-                );
-                Navigator.pop(ctx);
-              }
-            },
-            child: const Text('حفظ'),
-          ),
-        ],
+    // 1. Capture Summary Part (Current Active Items + Totals)
+    final summaryBytes = await screenshotController.captureFromWidget(
+      ReceiptPartWidget(
+        transaction: t,
+        mode: ReceiptPartMode.summary,
+        tenant: tenant,
       ),
+      context: context,
+      delay: const Duration(milliseconds: 500),
     );
+
+    // 2. Capture History Part (Payments + Returns + Settlements)
+    final historyBytes = await screenshotController.captureFromWidget(
+      ReceiptPartWidget(
+        transaction: t,
+        mode: ReceiptPartMode.history,
+        tenant: tenant,
+      ),
+      context: context,
+      delay: const Duration(milliseconds: 500),
+    );
+
+    final directory = await getApplicationDocumentsDirectory();
+    final summaryFile = await File(
+      '${directory.path}/summary_${t.id}.png',
+    ).create();
+    await summaryFile.writeAsBytes(summaryBytes);
+
+    final historyFile = await File(
+      '${directory.path}/history_${t.id}.png',
+    ).create();
+    await historyFile.writeAsBytes(historyBytes);
+
+    await Share.shareXFiles([
+      XFile(summaryFile.path),
+      XFile(historyFile.path),
+    ], text: t.tenantName);
   }
 
-  void _showEditTenantBottomSheet(Tenant? tenant, RentalTransaction t) {
-    final nameCtrl = TextEditingController(text: tenant?.name ?? t.tenantName);
-    final phoneCtrl = TextEditingController(
-      text: tenant?.phoneNumber ?? t.tenantPhone,
-    );
-    final addressCtrl = TextEditingController(
-      text: tenant?.address ?? t.tenantAddress,
-    );
+  void _showCloseAccountBottomSheet(RentalTransaction t) {
+    if (!t.isActive) return;
+
+    DateTime closeDate = DateTime.now();
 
     showModalBottomSheet(
       context: context,
       isScrollControlled: true,
-      builder: (ctx) => Padding(
-        padding: EdgeInsets.only(
-          bottom: MediaQuery.of(ctx).viewInsets.bottom,
-          left: 20,
-          right: 20,
-          top: 20,
-        ),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const Text(
-              'تعديل بيانات العميل',
-              style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
-            ),
-            const SizedBox(height: 20),
-            TextField(
-              controller: nameCtrl,
-              decoration: const InputDecoration(labelText: 'الاسم'),
-            ),
-            TextField(
-              controller: phoneCtrl,
-              decoration: const InputDecoration(labelText: 'الهاتف'),
-            ),
-            TextField(
-              controller: addressCtrl,
-              decoration: const InputDecoration(labelText: 'العنوان'),
-            ),
-            const SizedBox(height: 20),
-            SizedBox(
-              width: double.infinity,
-              child: ElevatedButton(
-                onPressed: () async {
-                  if (tenant != null) {
-                    tenant.name = nameCtrl.text;
-                    tenant.phoneNumber = phoneCtrl.text;
-                    tenant.address = addressCtrl.text;
-                    context.read<TenantCubit>().updateTenant(tenant);
-                  }
-                  t.tenantName = nameCtrl.text;
-                  t.tenantPhone = phoneCtrl.text;
-                  t.tenantAddress = addressCtrl.text;
-                  await t.save();
+      backgroundColor: Colors.transparent,
+      builder: (ctx) => StatefulBuilder(
+        builder: (context, setSheetState) {
+          final unbilled = t.calculateUnbilledAmount(closeDate);
+          final totalInvoiced = t.invoices.fold(0.0, (s, i) => s + i.amount);
+          final totalPaid = t.payments.fold(0.0, (s, p) => s + p.amount);
+          final finalBalance = (unbilled + totalInvoiced) - totalPaid;
+          final totalFridays = t.calculateTotalUnbilledFridays(closeDate);
 
-                  Navigator.pop(ctx);
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(
-                      content: Text('تم تحديث بيانات العميل بنجاح'),
+          return Container(
+            padding: const EdgeInsets.all(24),
+            decoration: const BoxDecoration(
+              color: Colors.white,
+              borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+            ),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Row(
+                  children: [
+                    Icon(
+                      Icons.report_gmailerrorred,
+                      color: Colors.red,
+                      size: 28,
                     ),
-                  );
-                },
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: primaryBrown,
-                  foregroundColor: Colors.white,
-                  padding: const EdgeInsets.symmetric(vertical: 16),
-                  shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(12),
+                    SizedBox(width: 12),
+                    Text(
+                      'إغلاق الحساب نهائياً',
+                      style: TextStyle(
+                        fontSize: 22,
+                        fontWeight: FontWeight.bold,
+                        color: Colors.red,
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 20),
+                const Text(
+                  'سيتم حساب كل المديونية المتبقية، وإرجاع جميع المعدات للمخزن، وإيقاف العداد نهائياً لهذا العميل.',
+                  style: TextStyle(color: Colors.grey, fontSize: 13),
+                ),
+                const SizedBox(height: 24),
+                const Text(
+                  'اختر تاريخ الإغلاق:',
+                  style: TextStyle(fontWeight: FontWeight.bold),
+                ),
+                const SizedBox(height: 8),
+                InkWell(
+                  onTap: () async {
+                    final date = await showDatePicker(
+                      context: context,
+                      initialDate: closeDate,
+                      firstDate: t.lastSettlementDate ?? t.startDate,
+                      lastDate: DateTime(2100),
+                    );
+                    if (date != null) setSheetState(() => closeDate = date);
+                  },
+                  child: Container(
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                      border: Border.all(color: Colors.red.shade100),
+                      borderRadius: BorderRadius.circular(10),
+                      color: Colors.red.shade50.withValues(alpha: 0.3),
+                    ),
+                    child: Row(
+                      children: [
+                        const Icon(
+                          Icons.calendar_month,
+                          color: Colors.red,
+                          size: 20,
+                        ),
+                        const SizedBox(width: 10),
+                        Text(
+                          intl.DateFormat('yyyy-MM-dd').format(closeDate),
+                          style: const TextStyle(
+                            fontWeight: FontWeight.bold,
+                            color: Colors.red,
+                          ),
+                        ),
+                        const Spacer(),
+                        const Icon(Icons.edit, size: 16, color: Colors.grey),
+                      ],
+                    ),
                   ),
                 ),
-                child: const Text(
-                  'حفظ التغييرات',
-                  style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+                const SizedBox(height: 12),
+                Container(
+                  decoration: BoxDecoration(
+                    color: t.discountFridays
+                        ? Colors.orange.shade50
+                        : Colors.grey.shade50,
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(
+                      color: t.discountFridays
+                          ? Colors.orange.shade200
+                          : Colors.grey.shade300,
+                    ),
+                  ),
+                  child: SwitchListTile(
+                    activeColor: Colors.orange.shade800,
+                    title: Text(
+                      'خصم أيام الجمعة من الحساب الجديد',
+                      style: TextStyle(
+                        fontSize: 13,
+                        fontWeight: FontWeight.bold,
+                        color: t.discountFridays
+                            ? Colors.orange.shade900
+                            : Colors.grey.shade700,
+                      ),
+                    ),
+                    subtitle: Text(
+                      t.discountFridays
+                          ? 'سيتم استبعاد أيام الجمعة من المديونية الحالية'
+                          : 'سيتم احتساب فترة الإغلاق بالكامل بدون خصم',
+                      style: const TextStyle(fontSize: 10),
+                    ),
+                    secondary: Icon(
+                      Icons.event_busy,
+                      color: t.discountFridays ? Colors.orange : Colors.grey,
+                    ),
+                    value: t.discountFridays,
+                    onChanged: (v) =>
+                        setSheetState(() => t.discountFridays = v),
+                  ),
                 ),
-              ),
+                const SizedBox(height: 24),
+                _infoRow(
+                  'تاريخ بداية التعاقد:',
+                  intl.DateFormat('yyyy-MM-dd').format(t.startDate),
+                ),
+                if (t.lastSettlementDate != null)
+                  _infoRow(
+                    'آخر تصفية كانت في:',
+                    intl.DateFormat('yyyy-MM-dd').format(t.lastSettlementDate!),
+                  ),
+                _infoRow('عدد التصفيات السابقة:', '${t.invoices.length} مرات'),
+                const Divider(height: 32),
+                if (t.discountFridays && totalFridays > 0)
+                  Padding(
+                    padding: const EdgeInsets.only(bottom: 12),
+                    child: Container(
+                      padding: const EdgeInsets.all(10),
+                      decoration: BoxDecoration(
+                        color: Colors.orange.shade50,
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      child: Row(
+                        children: [
+                          const Icon(
+                            Icons.event_busy,
+                            size: 16,
+                            color: Colors.orange,
+                          ),
+                          const SizedBox(width: 8),
+                          Text(
+                            'تم خصم $totalFridays يوم جمعة من المديونية الحالية',
+                            style: TextStyle(
+                              fontSize: 12,
+                              color: Colors.orange.shade900,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                _infoRow(
+                  'إجمالي الفواتير (حتى التاريخ المختار):',
+                  '${(unbilled + totalInvoiced).toStringAsFixed(1)} ج',
+                ),
+                _infoRow(
+                  'إجمالي المدفوعات:',
+                  '${totalPaid.toStringAsFixed(1)} ج',
+                  color: Colors.green,
+                ),
+                const Divider(height: 32),
+                Container(
+                  padding: const EdgeInsets.all(16),
+                  decoration: BoxDecoration(
+                    color: Colors.red.shade50,
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(color: Colors.red.shade200),
+                  ),
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      const Text(
+                        'المبلغ المطلوب للتقفيل:',
+                        style: TextStyle(
+                          fontWeight: FontWeight.bold,
+                          color: Colors.red,
+                        ),
+                      ),
+                      Text(
+                        '${finalBalance.toStringAsFixed(1)} ج',
+                        style: const TextStyle(
+                          fontSize: 24,
+                          fontWeight: FontWeight.bold,
+                          color: Colors.red,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 30),
+                SizedBox(
+                  width: double.infinity,
+                  child: ElevatedButton(
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: Colors.red,
+                      foregroundColor: Colors.white,
+                      padding: const EdgeInsets.symmetric(vertical: 16),
+                      elevation: 0,
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                    ),
+                    onPressed: () {
+                      context.read<RentalCubit>().closeRental(t, closeDate);
+                      Navigator.pop(ctx);
+                    },
+                    child: const Text(
+                      'تأكيد الإغلاق الصافي وتصفية الحساب',
+                      style: TextStyle(fontWeight: FontWeight.bold),
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 10),
+                SizedBox(
+                  width: double.infinity,
+                  child: TextButton(
+                    onPressed: () => Navigator.pop(ctx),
+                    child: const Text(
+                      'إلغاء',
+                      style: TextStyle(color: Colors.grey),
+                    ),
+                  ),
+                ),
+              ],
             ),
-            const SizedBox(height: 20),
-          ],
-        ),
+          );
+        },
+      ),
+    );
+  }
+
+  Widget _infoRow(String label, String value, {Color? color}) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 4),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+        children: [
+          Text(label, style: const TextStyle(fontWeight: FontWeight.w500)),
+          Text(
+            value,
+            style: TextStyle(
+              fontWeight: FontWeight.bold,
+              color: color ?? Colors.black87,
+            ),
+          ),
+        ],
       ),
     );
   }
@@ -347,25 +1383,16 @@ class _TransactionDetailsScreenState extends State<TransactionDetailsScreen> {
             ),
             body: TabBarView(
               children: [
-                ActiveItemsTab(
-                  transaction: currentTx,
-                  items: activeItems,
-                  onReturn: (item) => _showReturnBottomSheet(item, currentTx),
-                ),
-                ReturnedItemsTab(transaction: currentTx, items: returnedItems),
-                FinancialsTab(
-                  transaction: currentTx,
-                  unbilled: unbilled,
-                  invoiced: totalInvoiced,
-                  total: totalDue,
-                  paid: totalPaid,
-                  balance: balance,
+                _buildActiveTab(currentTx, activeItems),
+                _buildReturnedTab(returnedItems),
+                _buildFinancialsTab(
+                  currentTx,
+                  unbilled,
+                  totalInvoiced,
+                  totalDue,
+                  totalPaid,
+                  balance,
                   tenant: tenant,
-                  onAddPayment: () => _addPayment(currentTx),
-                  onSettle: () => _showSettleBottomSheet(currentTx),
-                  onCloseAccount: () => _showCloseAccountBottomSheet(currentTx),
-                  onEditTenant: () =>
-                      _showEditTenantBottomSheet(tenant, currentTx),
                 ),
               ],
             ),
@@ -374,4 +1401,1051 @@ class _TransactionDetailsScreenState extends State<TransactionDetailsScreen> {
       },
     );
   }
+
+  Widget _buildActiveTab(RentalTransaction t, List<RentalItem> items) {
+    if (items.isEmpty)
+      return const Center(child: Text("لا توجد مديونية نشطة حالياً"));
+    return ListView.builder(
+      itemCount: items.length,
+      padding: const EdgeInsets.all(16),
+      itemBuilder: (ctx, idx) {
+        final item = items[idx];
+        DateTime? effStart;
+        if (t.lastSettlementDate != null &&
+            t.lastSettlementDate!.isAfter(item.startDate)) {
+          effStart = t.lastSettlementDate;
+        }
+
+        final breakdown = item.calculateDetailedDays(
+          DateTime.now(),
+          excludeFridays: t.discountFridays,
+          alternativeStartDate: effStart,
+        );
+        final totalItemPrice =
+            item.quantity * item.priceAtMoment * breakdown.chargeableDays;
+
+        final isNewAddition = item.startDate.isAfter(t.startDate);
+
+        return Card(
+          elevation: isNewAddition ? 6 : 4,
+          margin: const EdgeInsets.only(bottom: 16),
+          color: isNewAddition ? const Color(0xFFF0F7FF) : Colors.white,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(15),
+            side: isNewAddition
+                ? BorderSide(color: Colors.blue.shade300, width: 2)
+                : BorderSide.none,
+          ),
+          child: Column(
+            children: [
+              ListTile(
+                contentPadding: const EdgeInsets.all(16),
+                title: Row(
+                  children: [
+                    Expanded(
+                      child: Text(
+                        item.itemName,
+                        style: const TextStyle(
+                          fontWeight: FontWeight.bold,
+                          fontSize: 18,
+                          color: Color(0xFF553117),
+                        ),
+                      ),
+                    ),
+                    if (isNewAddition)
+                      Container(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 8,
+                          vertical: 2,
+                        ),
+                        decoration: BoxDecoration(
+                          color: Colors.blue.shade50,
+                          borderRadius: BorderRadius.circular(6),
+                          border: Border.all(color: Colors.blue.shade200),
+                        ),
+                        child: Text(
+                          'إضافة جديدة',
+                          style: TextStyle(
+                            fontSize: 10,
+                            fontWeight: FontWeight.bold,
+                            color: Colors.blue.shade800,
+                          ),
+                        ),
+                      ),
+                  ],
+                ),
+                subtitle: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const SizedBox(height: 8),
+                    Row(
+                      children: [
+                        const Icon(
+                          Icons.inventory_2_outlined,
+                          size: 14,
+                          color: Colors.grey,
+                        ),
+                        const SizedBox(width: 4),
+                        Text('الكمية: ${item.quantity}'),
+                        const SizedBox(width: 15),
+                        const Icon(
+                          Icons.sell_outlined,
+                          size: 14,
+                          color: Colors.grey,
+                        ),
+                        const SizedBox(width: 4),
+                        Text('السعر: ${item.priceAtMoment} ج'),
+                      ],
+                    ),
+                    const SizedBox(height: 4),
+                    Row(
+                      children: [
+                        const Icon(
+                          Icons.calendar_today_outlined,
+                          size: 14,
+                          color: Colors.grey,
+                        ),
+                        const SizedBox(width: 4),
+                        Text(
+                          'تاريخ الاستلام: ${_formatFullDate(item.startDate)}',
+                          style: TextStyle(
+                            color: isNewAddition
+                                ? Colors.indigo.shade700
+                                : Colors.black87,
+                            fontWeight: isNewAddition
+                                ? FontWeight.bold
+                                : FontWeight.normal,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+                trailing: Text(
+                  '${totalItemPrice.toStringAsFixed(1)} ج',
+                  style: const TextStyle(
+                    fontSize: 18,
+                    fontWeight: FontWeight.bold,
+                    color: Colors.green,
+                  ),
+                ),
+              ),
+              Container(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 16,
+                  vertical: 8,
+                ),
+                decoration: BoxDecoration(
+                  color: Colors.grey[50],
+                  borderRadius: const BorderRadius.vertical(
+                    bottom: Radius.circular(15),
+                  ),
+                ),
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    _breakdownChip(
+                      '${breakdown.totalDays} يوم',
+                      Icons.timer,
+                      Colors.blueGrey,
+                    ),
+                    if (t.discountFridays && breakdown.fridays > 0)
+                      _breakdownChip(
+                        '${breakdown.fridays} جمعة (خصم)',
+                        Icons.event_busy,
+                        Colors.redAccent,
+                      ),
+                    _breakdownChip(
+                      'صافي: ${breakdown.chargeableDays} يوم',
+                      Icons.calculate,
+                      Colors.brown,
+                    ),
+                    IconButton(
+                      icon: const Icon(
+                        Icons.assignment_return,
+                        color: Colors.orange,
+                      ),
+                      onPressed: () => _showReturnBottomSheet(item),
+                      tooltip: 'إرجاع الصنف',
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
+  Widget _breakdownChip(String label, IconData icon, Color color) {
+    return Row(
+      children: [
+        Icon(icon, size: 12, color: color),
+        const SizedBox(width: 3),
+        Text(
+          label,
+          style: TextStyle(
+            fontSize: 11,
+            color: color,
+            fontWeight: FontWeight.bold,
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildReturnedTab(List<RentalItem> items) {
+    if (items.isEmpty) return const Center(child: Text("سجل المرتجعات فارغ"));
+    final t = widget.transaction;
+
+    return ListView.builder(
+      itemCount: items.length,
+      padding: const EdgeInsets.all(16),
+      itemBuilder: (ctx, idx) {
+        final item = items[idx];
+        final breakdown = item.calculateDetailedDays(
+          item.returnDate ?? DateTime.now(),
+          excludeFridays: t.discountFridays,
+        );
+        final totalItemCost =
+            item.quantity * item.priceAtMoment * breakdown.chargeableDays;
+
+        return Container(
+          margin: const EdgeInsets.only(bottom: 12),
+          decoration: BoxDecoration(
+            color: Colors.white,
+            borderRadius: BorderRadius.circular(16),
+            boxShadow: [
+              BoxShadow(
+                color: Colors.black.withValues(alpha: 0.03),
+                blurRadius: 10,
+                offset: const Offset(0, 4),
+              ),
+            ],
+            border: Border.all(color: Colors.grey.shade100),
+          ),
+          child: Stack(
+            children: [
+              Positioned(
+                left: 0,
+                top: 15,
+                bottom: 15,
+                child: Container(
+                  width: 4,
+                  decoration: BoxDecoration(
+                    color: Colors.green.shade400,
+                    borderRadius: const BorderRadius.horizontal(
+                      right: Radius.circular(4),
+                    ),
+                  ),
+                ),
+              ),
+              Padding(
+                padding: const EdgeInsets.all(16),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        Container(
+                          padding: const EdgeInsets.all(8),
+                          decoration: BoxDecoration(
+                            color: Colors.green.shade50,
+                            shape: BoxShape.circle,
+                          ),
+                          child: Icon(
+                            Icons.assignment_return,
+                            color: Colors.green.shade700,
+                            size: 20,
+                          ),
+                        ),
+                        const SizedBox(width: 12),
+                        Expanded(
+                          child: Text(
+                            item.itemName,
+                            style: TextStyle(
+                              fontWeight: FontWeight.bold,
+                              fontSize: 16,
+                              color: primaryBrown,
+                            ),
+                          ),
+                        ),
+                        Container(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 10,
+                            vertical: 4,
+                          ),
+                          decoration: BoxDecoration(
+                            color: Colors.grey.shade100,
+                            borderRadius: BorderRadius.circular(12),
+                          ),
+                          child: Text(
+                            'تم الإرجاع',
+                            style: TextStyle(
+                              fontSize: 10,
+                              fontWeight: FontWeight.bold,
+                              color: Colors.grey.shade600,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 16),
+                    Row(
+                      children: [
+                        Expanded(
+                          child: _returnedInfoBox(
+                            'تاريخ الاستلام',
+                            _formatFullDate(item.startDate),
+                            Icons.login_outlined,
+                          ),
+                        ),
+                        Container(
+                          height: 30,
+                          width: 1,
+                          color: Colors.grey.shade200,
+                          margin: const EdgeInsets.symmetric(horizontal: 12),
+                        ),
+                        Expanded(
+                          child: _returnedInfoBox(
+                            'تاريخ الإرجاع',
+                            _formatFullDate(item.returnDate ?? DateTime.now()),
+                            Icons.logout_outlined,
+                          ),
+                        ),
+                      ],
+                    ),
+                    const Divider(height: 24),
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              'التفاصيل: ${item.quantity} قطعة × ${breakdown.chargeableDays} يوم',
+                              style: TextStyle(
+                                fontSize: 11,
+                                color: Colors.grey.shade600,
+                              ),
+                            ),
+                            if (t.discountFridays && breakdown.fridays > 0)
+                              Text(
+                                '(تم استبعاد ${breakdown.fridays} جمعة من الحساب)',
+                                style: TextStyle(
+                                  fontSize: 10,
+                                  color: Colors.orange.shade800,
+                                ),
+                              ),
+                          ],
+                        ),
+                        Text(
+                          '${totalItemCost.toStringAsFixed(1)} ج',
+                          style: TextStyle(
+                            fontWeight: FontWeight.w900,
+                            fontSize: 18,
+                            color: Colors.green.shade700,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
+  Widget _returnedInfoBox(String label, String value, IconData icon) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          children: [
+            Icon(icon, size: 12, color: Colors.grey),
+            const SizedBox(width: 4),
+            Text(
+              label,
+              style: const TextStyle(fontSize: 10, color: Colors.grey),
+            ),
+          ],
+        ),
+        const SizedBox(height: 2),
+        Text(
+          value,
+          style: TextStyle(
+            fontSize: 13,
+            fontWeight: FontWeight.bold,
+            color: Colors.black87,
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildFinancialsTab(
+    RentalTransaction t,
+    double unbilled,
+    double invoiced,
+    double total,
+    double paid,
+    double bal, {
+    Tenant? tenant,
+  }) {
+    return SingleChildScrollView(
+      padding: const EdgeInsets.all(16),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // 0. Internal Client Info (For user only)
+          Container(
+            padding: const EdgeInsets.all(16),
+            decoration: BoxDecoration(
+              color: Colors.grey.shade50,
+              borderRadius: BorderRadius.circular(16),
+              border: Border.all(color: Colors.grey.shade200),
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    Icon(
+                      Icons.admin_panel_settings,
+                      size: 16,
+                      color: Colors.blueGrey.shade700,
+                    ),
+                    const SizedBox(width: 8),
+                    Text(
+                      'بيانات العميل (خاصة بك)',
+                      style: TextStyle(
+                        fontSize: 12,
+                        fontWeight: FontWeight.bold,
+                        color: Colors.blueGrey.shade700,
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 12),
+                _internalInfoRow(
+                  Icons.phone,
+                  'رقم الهاتف:',
+                  (tenant?.phoneNumber ?? t.tenantPhone) ?? 'غير مسجل',
+                ),
+                const SizedBox(height: 10),
+                _internalInfoRow(
+                  Icons.location_on,
+                  'العنوان:',
+                  (tenant?.address ?? t.tenantAddress) ?? 'غير مسجل',
+                ),
+                const SizedBox(height: 10),
+                _internalInfoRow(
+                  Icons.description,
+                  'الوصف:',
+                  tenant?.notes ?? 'لا توجد ملاحظات',
+                ),
+                const SizedBox(height: 10),
+                _internalInfoRow(
+                  Icons.badge,
+                  'حالة البطاقة:',
+                  tenant?.hasIdCard == true
+                      ? 'صورة البطاقة متوفرة'
+                      : 'لا توجد صورة بطاقة',
+                  valueColor: tenant?.hasIdCard == true
+                      ? Colors.green.shade700
+                      : Colors.red.shade700,
+                ),
+                const SizedBox(height: 18),
+                SizedBox(
+                  width: double.infinity,
+                  child: OutlinedButton.icon(
+                    onPressed: () => _showEditTenantBottomSheet(tenant, t),
+                    icon: const Icon(Icons.edit_note, size: 18),
+                    label: Text(
+                      'تعديل الملف الشخصي للعميل',
+                      style: TextStyle(
+                        fontSize: 13,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                    style: OutlinedButton.styleFrom(
+                      foregroundColor: primaryBrown,
+                      side: BorderSide(
+                        color: primaryBrown.withValues(alpha: 0.3),
+                      ),
+                      padding: const EdgeInsets.symmetric(vertical: 12),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 24),
+
+          // 1. Balance Summary Card
+          Container(
+            width: double.infinity,
+            padding: const EdgeInsets.all(24),
+            decoration: BoxDecoration(
+              gradient: LinearGradient(
+                colors: bal > 0
+                    ? [Colors.red.shade800, Colors.red.shade600]
+                    : [Colors.teal.shade800, Colors.teal.shade600],
+                begin: Alignment.topRight,
+                end: Alignment.bottomLeft,
+              ),
+              borderRadius: BorderRadius.circular(24),
+              boxShadow: [
+                BoxShadow(
+                  color: (bal > 0 ? Colors.red : Colors.teal).withValues(
+                    alpha: 0.3,
+                  ),
+                  blurRadius: 15,
+                  offset: const Offset(0, 8),
+                ),
+              ],
+            ),
+            child: Column(
+              children: [
+                Text(
+                  'الرصيد المتبقي (الصافي)',
+                  style: TextStyle(
+                    color: Colors.white.withOpacity(0.9),
+                    fontSize: 14,
+                  ),
+                ),
+                Text(
+                  '${bal.toStringAsFixed(1)} ج',
+                  style: TextStyle(
+                    color: Colors.white,
+                    fontSize: 36,
+                    fontWeight: FontWeight.w900,
+                  ),
+                ),
+                Container(
+                  margin: const EdgeInsets.only(top: 12),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 16,
+                    vertical: 6,
+                  ),
+                  decoration: BoxDecoration(
+                    color: Colors.white.withOpacity(0.15),
+                    borderRadius: BorderRadius.circular(30),
+                  ),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(
+                        bal > 0
+                            ? Icons.info_outline
+                            : Icons.check_circle_outline,
+                        color: Colors.white,
+                        size: 16,
+                      ),
+                      const SizedBox(width: 8),
+                      Text(
+                        bal > 0 ? 'مديونية مستحقة' : 'الحساب خالص',
+                        style: TextStyle(
+                          color: Colors.white,
+                          fontSize: 11,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 24),
+
+          // 2. Breakdown Section
+          Text(
+            'تفاصيل المديونية:',
+            style: TextStyle(
+              fontWeight: FontWeight.bold,
+              color: Colors.blueGrey.shade800,
+            ),
+          ),
+          const SizedBox(height: 12),
+          Container(
+            decoration: BoxDecoration(
+              color: Colors.white,
+              borderRadius: BorderRadius.circular(20),
+              border: Border.all(color: Colors.grey.shade100),
+            ),
+            child: Column(
+              children: [
+                _financialItemRow(
+                  'مديونية الفترة الحالية (غير مفوترة)',
+                  unbilled,
+                  Colors.orange.shade800,
+                  Icons.trending_up,
+                  subtitle: t.discountFridays ? 'تاريخ التصفية القادم' : null,
+                ),
+                if (t.discountFridays)
+                  Padding(
+                    padding: const EdgeInsets.only(
+                      right: 54,
+                      left: 16,
+                      bottom: 12,
+                    ),
+                    child: Container(
+                      padding: const EdgeInsets.all(8),
+                      decoration: BoxDecoration(
+                        color: Colors.orange.shade50,
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      child: Row(
+                        children: [
+                          Icon(
+                            Icons.event_busy,
+                            size: 12,
+                            color: Colors.orange.shade900,
+                          ),
+                          const SizedBox(width: 6),
+                          Text(
+                            'المستبعد: ${t.calculateTotalUnbilledFridays(DateTime.now())} يوم جمعة',
+                            style: TextStyle(
+                              fontSize: 10,
+                              color: Colors.orange.shade900,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                const Divider(height: 1),
+                _financialItemRow(
+                  'مستخلصات سابقة (فواتير)',
+                  invoiced,
+                  Colors.blueGrey.shade700,
+                  Icons.history_edu,
+                ),
+                const Divider(height: 1),
+                _financialItemRow(
+                  'إجمالي المديونية المستحقة',
+                  total,
+                  primaryBrown,
+                  Icons.account_balance_wallet,
+                  isBold: true,
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 24),
+
+          // 3. Payment Summary
+          Text(
+            'حالة الدفع:',
+            style: TextStyle(
+              fontWeight: FontWeight.bold,
+              color: Colors.blueGrey.shade800,
+            ),
+          ),
+          const SizedBox(height: 12),
+          Container(
+            padding: const EdgeInsets.all(16),
+            decoration: BoxDecoration(
+              color: Colors.white,
+              borderRadius: BorderRadius.circular(20),
+              border: Border.all(color: Colors.grey.shade100),
+            ),
+            child: Row(
+              children: [
+                Container(
+                  width: 50,
+                  height: 50,
+                  decoration: BoxDecoration(
+                    color: Colors.green.shade50,
+                    shape: BoxShape.circle,
+                  ),
+                  child: Icon(
+                    Icons.payments_outlined,
+                    color: Colors.green.shade700,
+                  ),
+                ),
+                const SizedBox(width: 16),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        'إجمالي ما تم دفعه',
+                        style: TextStyle(fontSize: 12, color: Colors.grey),
+                      ),
+                      Text(
+                        '${paid.toStringAsFixed(1)} ج',
+                        style: TextStyle(
+                          fontSize: 20,
+                          fontWeight: FontWeight.w900,
+                          color: Colors.green.shade700,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                Column(
+                  children: [
+                    Text(
+                      'النسبة المحصلة',
+                      style: TextStyle(fontSize: 10, color: Colors.grey),
+                    ),
+                    Text(
+                      total > 0
+                          ? '${((paid / total) * 100).toStringAsFixed(0)}%'
+                          : '0%',
+                      style: TextStyle(
+                        fontWeight: FontWeight.bold,
+                        color: Colors.blueGrey,
+                      ),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 32),
+
+          // 4. Quick Actions
+          Row(
+            children: [
+              Expanded(
+                child: _actionBtn(
+                  Icons.add_card,
+                  'دفع مبلغ',
+                  Colors.green.shade700,
+                  _addPayment,
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: _actionBtn(
+                  Icons.assignment_turned_in,
+                  'تصفية فترة',
+                  Colors.blueGrey.shade800,
+                  () => _showSettleBottomSheet(t),
+                ),
+              ),
+            ],
+          ),
+          if (t.isActive) ...[
+            const SizedBox(height: 12),
+            SizedBox(
+              width: double.infinity,
+              child: _actionBtn(
+                Icons.no_accounts,
+                'إنهاء وإغلاق الحساب نهائياً',
+                Colors.red.shade800,
+                () => _showCloseAccountBottomSheet(t),
+              ),
+            ),
+          ],
+          const SizedBox(height: 40),
+          Row(
+            children: [
+              const Icon(Icons.history, size: 20, color: Colors.grey),
+              const SizedBox(width: 8),
+              Text(
+                'سجل الحركة المالية',
+                style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+              ),
+            ],
+          ),
+          const SizedBox(height: 16),
+          _buildFinancialHistory(t),
+        ],
+      ),
+    );
+  }
+
+  Widget _financialItemRow(
+    String label,
+    double value,
+    Color color,
+    IconData icon, {
+    bool isBold = false,
+    String? subtitle,
+  }) {
+    return Padding(
+      padding: const EdgeInsets.all(16),
+      child: Row(
+        children: [
+          Container(
+            padding: const EdgeInsets.all(8),
+            decoration: BoxDecoration(
+              color: color.withValues(alpha: 0.1),
+              borderRadius: BorderRadius.circular(10),
+            ),
+            child: Icon(icon, size: 20, color: color),
+          ),
+          const SizedBox(width: 16),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  label,
+                  style: TextStyle(
+                    fontSize: 13,
+                    color: Colors.blueGrey.shade800,
+                  ),
+                ),
+                if (subtitle != null)
+                  Text(
+                    subtitle,
+                    style: const TextStyle(fontSize: 10, color: Colors.grey),
+                  ),
+              ],
+            ),
+          ),
+          Text(
+            '${value.toStringAsFixed(1)} ج',
+            style: TextStyle(
+              fontSize: isBold ? 18 : 15,
+              fontWeight: isBold ? FontWeight.w900 : FontWeight.bold,
+              color: isBold ? primaryBrown : Colors.black87,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _internalInfoRow(
+    IconData icon,
+    String label,
+    String value, {
+    Color? valueColor,
+  }) {
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Icon(icon, size: 16, color: primaryBrown.withOpacity(0.6)),
+        const SizedBox(width: 10),
+        Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              label,
+              style: TextStyle(
+                fontSize: 10,
+                color: Colors.grey.shade600,
+                fontWeight: FontWeight.bold,
+              ),
+            ),
+            Text(
+              value,
+              style: TextStyle(
+                fontSize: 12,
+                fontWeight: FontWeight.bold,
+                color: valueColor ?? Colors.blueGrey.shade900,
+              ),
+            ),
+          ],
+        ),
+      ],
+    );
+  }
+
+  Widget _actionBtn(
+    IconData icon,
+    String label,
+    Color color,
+    VoidCallback onTap,
+  ) {
+    return ElevatedButton.icon(
+      onPressed: onTap,
+      icon: Icon(icon, size: 20),
+      label: Text(label, style: TextStyle(fontWeight: FontWeight.bold)),
+      style: ElevatedButton.styleFrom(
+        backgroundColor: color,
+        foregroundColor: Colors.white,
+        padding: const EdgeInsets.symmetric(vertical: 15),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+      ),
+    );
+  }
+
+  Widget _buildFinancialHistory(RentalTransaction t) {
+    final List<dynamic> history = [...t.invoices, ...t.payments];
+    history.sort((a, b) {
+      DateTime da = a is FinancialRecord ? a.date : (a as PaymentLog).date;
+      DateTime db = b is FinancialRecord ? b.date : (b as PaymentLog).date;
+      return db.compareTo(da);
+    });
+
+    if (history.isEmpty) return const Text('لا يوجد سجل مالي حالياً');
+
+    return ListView.builder(
+      shrinkWrap: true,
+      physics: const NeverScrollableScrollPhysics(),
+      itemCount: history.length,
+      itemBuilder: (ctx, idx) {
+        final item = history[idx];
+        final isInvoice = item is FinancialRecord;
+        return Card(
+          margin: const EdgeInsets.only(bottom: 8),
+          child: ListTile(
+            leading: Icon(
+              isInvoice ? Icons.description_outlined : Icons.monetization_on,
+              color: isInvoice ? Colors.blueGrey : Colors.green,
+            ),
+            title: Text(isInvoice ? 'تصفية مستخلص' : 'تحصيل نقدية'),
+            subtitle: Text(_formatFullDate(isInvoice ? item.date : item.date)),
+            trailing: Text(
+              '${isInvoice ? '+' : '-'}${item.amount} ج',
+              style: TextStyle(
+                fontWeight: FontWeight.bold,
+                color: isInvoice ? Colors.black : Colors.green[700],
+              ),
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  void _showEditTenantBottomSheet(Tenant? tenant, RentalTransaction t) {
+    if (tenant == null) return;
+
+    final nameCtrl = TextEditingController(text: tenant.name);
+    final phoneCtrl = TextEditingController(text: tenant.phoneNumber);
+    final addressCtrl = TextEditingController(text: tenant.address);
+    final notesCtrl = TextEditingController(text: tenant.notes);
+
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (ctx) => Container(
+        padding: EdgeInsets.only(
+          bottom: MediaQuery.of(context).viewInsets.bottom + 24,
+          left: 24,
+          right: 24,
+          top: 24,
+        ),
+        decoration: const BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              'تعديل بيانات العميل',
+              style: TextStyle(
+                fontSize: 20,
+                fontWeight: FontWeight.bold,
+                color: primaryBrown,
+              ),
+            ),
+            const SizedBox(height: 24),
+            TextField(
+              controller: nameCtrl,
+              decoration: const InputDecoration(
+                labelText: 'اسم العميل',
+                prefixIcon: Icon(Icons.person),
+              ),
+            ),
+            const SizedBox(height: 16),
+            TextField(
+              controller: phoneCtrl,
+              decoration: const InputDecoration(
+                labelText: 'رقم الهاتف',
+                prefixIcon: Icon(Icons.phone),
+              ),
+              keyboardType: TextInputType.phone,
+            ),
+            const SizedBox(height: 16),
+            TextField(
+              controller: addressCtrl,
+              decoration: const InputDecoration(
+                labelText: 'العنوان',
+                prefixIcon: Icon(Icons.location_on),
+              ),
+            ),
+            const SizedBox(height: 16),
+            TextField(
+              controller: notesCtrl,
+              decoration: const InputDecoration(
+                labelText: 'الوصف / ملاحظات إضافية',
+                prefixIcon: Icon(Icons.description),
+              ),
+              maxLines: 3,
+            ),
+            const SizedBox(height: 24),
+            SizedBox(
+              width: double.infinity,
+              child: ElevatedButton(
+                onPressed: () async {
+                  final updatedTenant = Tenant(
+                    id: tenant.id,
+                    name: nameCtrl.text,
+                    phoneNumber: phoneCtrl.text,
+                    address: addressCtrl.text,
+                    notes: notesCtrl.text,
+                    hasIdCard: tenant.hasIdCard,
+                  );
+
+                  await context.read<TenantCubit>().updateTenant(updatedTenant);
+
+                  // Update the transaction snapshot too
+                  t.tenantName = nameCtrl.text;
+                  t.tenantPhone = phoneCtrl.text;
+                  t.tenantAddress = addressCtrl.text;
+                  await t.save();
+
+                  Navigator.pop(ctx);
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(
+                      content: Text('تم تحديث بيانات العميل بنجاح'),
+                    ),
+                  );
+                },
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: primaryBrown,
+                  foregroundColor: Colors.white,
+                  padding: const EdgeInsets.symmetric(vertical: 16),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                ),
+                child: Text(
+                  'حفظ التغييرات',
+                  style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+String _getDayName(DateTime date) {
+  const shortDays = {
+    DateTime.monday: 'اثنين',
+    DateTime.tuesday: 'ثلاثاء',
+    DateTime.wednesday: 'أربعاء',
+    DateTime.thursday: 'خميس',
+    DateTime.friday: 'جمعة',
+    DateTime.saturday: 'سبت',
+    DateTime.sunday: 'أحد',
+  };
+  return shortDays[date.weekday] ?? '';
+}
+
+String _formatFullDate(DateTime date) {
+  return '${_getDayName(date)}، ${intl.DateFormat('yyyy-MM-dd').format(date)}';
 }

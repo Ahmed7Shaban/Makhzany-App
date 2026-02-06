@@ -189,11 +189,20 @@ class RentalCubit extends Cubit<RentalState> {
     }
   }
 
-  Future<void> addPayment(String transactionId, PaymentLog payment) async {
+  Future<void> addPayment(
+    String transactionId,
+    double amount,
+    String? note,
+  ) async {
     emit(RentalLoading());
     try {
       final transaction = _rentalRepository.getRentals().firstWhere(
         (r) => r.id == transactionId,
+      );
+      final payment = PaymentLog(
+        amount: amount,
+        date: DateTime.now(),
+        note: note,
       );
       transaction.payments.add(payment);
       await _rentalRepository.updateTransaction(transaction);
